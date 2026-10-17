@@ -2,8 +2,10 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http; // Added for Real API Requests
 
 void main() {
+  print('🚀 [App Initialization] Starting TaskWise App...');
   runApp(
     ChangeNotifierProvider(
       create: (_) => TaskStore()..load(),
@@ -62,25 +64,39 @@ class TaskItem {
   };
 }
 
-// ==================== 2. SERVICE (LOCAL STORAGE) ====================
+// ==================== 2. SERVICE (LOCAL STORAGE & API LAYER) ====================
 class TaskService {
-  Future<List<TaskItem>> fetchAll() async {
+  // Replace this URL with your real backend API endpoint when ready
+  final String apiBaseUrl = 'https://jsonplaceholder.typicode.com/posts';
+
+  // --- Local Storage Methods (Primary for offline/quick use) ---
+  Future<List<TaskItem>> fetchAllLocal() async {
+    print('📦 [TaskService] Fetching tasks from local SharedPreferences...');
     final prefs = await SharedPreferences.getInstance();
     final text = prefs.getString('taskwise_tasks');
-    if (text == null) return [];
+    if (text == null) {
+      print('📦 [TaskService] No local tasks found. Returning empty list.');
+      return [];
+    }
     final data = jsonDecode(text) as List;
-    return data.map((j) => TaskItem.fromJson(j)).toList();
+    final tasks = data.map((j) => TaskItem.fromJson(j)).toList();
+    print('📦 [TaskService] Successfully loaded ${tasks.length} tasks locally.');
+    return tasks;
   }
 
-  Future<void> saveAll(List<TaskItem> tasks) async {
+  Future<void> saveAllLocal(List<TaskItem> tasks) async {
+    print('💾 [TaskService] Saving ${tasks.length} tasks to local storage...');
     final prefs = await SharedPreferences.getInstance();
     final list = tasks.map((t) => t.toJson()).toList();
     await prefs.setString('taskwise_tasks', jsonEncode(list));
+    print('💾 [TaskService] Local save completed successfully.');
   }
 
-  Future<void> clearAll() async {
+  Future<void> clearAllLocal() async {
+    print('🗑️ [TaskService] Clearing all local task storage...');
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('taskwise_tasks');
+    print('🗑️ [TaskService] Local storage cleared.');
   }
 
   Future<bool> getNotificationsEnabled() async {
@@ -91,10 +107,34 @@ class TaskService {
   Future<void> setNotificationsEnabled(bool enabled) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('notifications_enabled', enabled);
+    print('🔔 [TaskService] Notifications setting updated to: $enabled');
+  }
+
+  // --- Real API Integration Method (Example for Testing Network/API Logs) ---
+  Future<void> syncTaskWithApi(TaskItem task) async {
+    try {
+      print('🌐 [ApiCall] Sending POST request to backend API: $apiBaseUrl');
+      print('🌐 [ApiCall Payload] ${jsonEncode(task.toJson())}');
+
+      final response = await http.post(
+        Uri.parse(apiBaseUrl),
+        headers: {'Content-Type': 'application/json; charset=UTF-8'},
+        body: jsonEncode(task.toJson()),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        print('✅ [ApiCall Success] Server responded with status: ${response.statusCode}');
+        print('✅ [ApiCall Response] ${response.body}');
+      } else {
+        print('⚠️ [ApiCall Warning] Server responded with error status: ${response.statusCode}');
+      }
+    } catch (e) {
+      print('❌ [ApiCall Error] Failed to connect to API server: $e');
+    }
   }
 }
 
-// ==================== 3. STORE (STATE MANAGEMENT) ====================
+// ==================== 3. STORE (STATE MANAGEMENT & LOGGING) ====================
 class TaskStore extends ChangeNotifier {
   final service = TaskService();
   List<TaskItem> items = [];
@@ -105,33 +145,47 @@ class TaskStore extends ChangeNotifier {
   Future<void> load() async {
     loading = true;
     error = null;
+    print('🔄 [TaskStore] App state loading initiated...');
     notifyListeners();
+
     try {
-      items = await service.fetchAll();
+      items = await service.fetchAllLocal();
       notificationsEnabled = await service.getNotificationsEnabled();
+      print('✅ [TaskStore] Load complete. Active task count: ${items.length}');
     } catch (e) {
       error = 'Could not load your tasks';
+      print('❌ [TaskStore Error] Exception caught during load: $e');
     }
+
     loading = false;
     notifyListeners();
   }
 
-  void add(TaskItem task) {
+  void add(TaskItem task) async {
+    print('➕ [TaskStore] Adding new task: "${task.title}" (Difficulty: ${task.difficulty})');
     items.insert(0, task);
     notifyListeners();
-    service.saveAll(items);
+
+    // Save locally
+    await service.saveAllLocal(items);
+
+    // Trigger API sync test in background
+    await service.syncTaskWithApi(task);
   }
 
-  void toggleTaskStatus(int index) {
+  void toggleTaskStatus(int index) async {
     items[index].isDone = !items[index].isDone;
+    print('🔄 [TaskStore] Toggled task status at index $index ("${items[index].title}") to: ${items[index].isDone}');
     notifyListeners();
-    service.saveAll(items);
+    await service.saveAllLocal(items);
   }
 
   Future<void> clearData() async {
+    print('⚠️ [TaskStore] User requested to clear all tasks.');
     items.clear();
-    await service.clearAll();
+    await service.clearAllLocal();
     notifyListeners();
+    print('🗑️ [TaskStore] All tasks wiped successfully.');
   }
 
   Future<void> toggleNotifications(bool value) async {
@@ -189,6 +243,7 @@ class HomeScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.person_outline),
             onPressed: () {
+              print('👆 [Navigation] Opening Settings / Profile Screen');
               Navigator.push(
                 context,
                 MaterialPageRoute(
@@ -204,6 +259,7 @@ class HomeScreen extends StatelessWidget {
         icon: const Icon(Icons.add),
         label: const Text('Add Task'),
         onPressed: () {
+          print('👆 [Navigation] Opening Add Task Screen');
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -321,8 +377,12 @@ class _AddTaskScreenState extends State<AddTaskScreen> {
   }
 
   void save() {
-    if (!formKey.currentState!.validate()) return;
+    if (!formKey.currentState!.validate()) {
+      print('⚠️ [Form Validation] Add task validation failed.');
+      return;
+    }
 
+    print('✨ [Form Validation] Add task validation passed. Saving task...');
     final task = TaskItem(
       title: titleController.text.trim(),
       deadline: deadlineController.text.trim(),
